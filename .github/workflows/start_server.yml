@@ -72,33 +72,31 @@ jobs:
           sleep 15
           grep -o 'https://[^ ]*\.trycloudflare\.com' cf_*.log || true
 
-
       - name: Install playit.gg
         run: |
-          # 1. Create the exact config folder playit expects
-          mkdir -p ~/.config/playit
+          # 1. Create the correct config folder using the underscore path playit is looking for
+          mkdir -p ~/.config/playit_gg
           
-          # 2. Automatically generate the playit.toml file using your secret
-          # This completely bypasses the interactive "Claim Link" step!
-          echo "secret_key = \"${{ secrets.PLAYIT_SECRET }}\"" > ~/.config/playit/playit.toml
+          # 2. Write your secret key into the toml file
+          echo "secret_key = \"${{ secrets.PLAYIT_SECRET }}\"" > ~/.config/playit_gg/playit.toml
           
-          # 3. Download the official, updated linux-amd64 binary
+          # 3. Download the clean stable agent binary
           curl -SsL https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-linux-amd64 -o playit
           chmod +x playit
 
       - name: Start playit.gg tunnel
         run: |
-          echo "Starting playit agent in the background..."
+          echo "Starting playit agent headlessly..."
           
-          # Run playit cleanly without extra CLI arguments (it reads playit.toml automatically)
-          ./playit > playit.log 2>&1 &
+          # Use --headless to bypass the IPC socket system binding error
+          ./playit --headless > playit.log 2>&1 &
           
-          # Give it 10 seconds to authenticate and establish the mapping
-          sleep 10
+          # Give it a few moments to connect to the api servers
+          sleep 12
           
           echo "=== PLAYIT OUTPUT LOGS ==="
-          # Check if playit is actually up or if it hit an authentication error
           cat playit.log || true
+          echo "=========================="
 
       - name: Start File Browser
         run: |
