@@ -1,0 +1,120 @@
+name: Minecraft Server with playit.gg & Cloudflared
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6 hours max, we stop at 5.5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read config.json
+        id: config
+        run: |
+          echo "SERVER_FILE=$(jq -r '.server_file_name' config.json)" >> $GITHUB_OUTPUT
+          echo "SERVER_ARGS=$(jq -r '.server_args' config.json)" >> $GITHUB_OUTPUT
+          echo "JAVA_VER=$(jq -r '.java_version' config.json)" >> $GITHUB_OUTPUT
+
+      - name: Download latest server.7z from release
+        id: download
+        uses: robinraju/release-downloader@v1
+        with:
+          latest: true
+          fileName: 'server.7z'
+        continue-on-error: true
+
+      - name: Extract server.7z (if downloaded)
+        if: steps.download.outcome == 'success'
+        uses: edgarrc/action-7z@v1
+        with:
+          args: 7z x server.7z -aoa
+
+      - name: Create server folder if extraction was skipped
+        if: steps.download.outcome != 'success'
+        run: mkdir -p server
+
+      - name: Download mods from mods.json
+        run: python mod_downloader.py
+
+      # ---------- Tunnels & Services ----------
+      - name: Setup cloudflared
+        uses: AnimMouse/setup-cloudflared@v2
+
+      - name: Start cloudflared tunnels (FileBrowser, Fetcher, Controller)
+        run: |
+          cloudflared tunnel --url http://localhost:8084 > cloudflare_filebrowser.log 2>&1 &
+          cloudflared tunnel --url http://localhost:8082 > cloudflare_fetcher.log 2>&1 &
+          cloudflared tunnel --url http://localhost:9000 > cloudflare_controller.log 2>&1 &
+          sleep 10
+          echo "=== Cloudflare URLs ==="
+          grep -o 'https://[^ ]*\.trycloudflare\.com' cloudflare_*.log || echo "Wait a moment..."
+
+      - name: Install playit.gg for game tunnel
+        run: |
+          curl -SsL https://playit-cloud.github.io/playit-downloads/playit-linux-amd64 -o playit
+          chmod +x playit
+
+      - name: Start playit.gg tunnel (TCP port 25565)
+        run: |
+          ./playit --port 25565 --tcp > playit.log 2>&1 &
+          sleep 10
+          echo "=== playit.gg public address ==="
+          grep -o 'tcp://[^ ]*' playit.log || echo "Check playit.log for address"
+
+      - name: Install and start File Browser
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+          filebrowser --root ./server --port 8084 --address 0.0.0.0 --noauth > filebrowser.log 2>&1 &
+          sleep 3
+
+      - name: Start File Fetcher (config panel)
+        run: |
+          cd server
+          python ../file_fetcher.py > ../filefetcher.log 2>&1 &
+          cd ..
+          sleep 3
+
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: ${{ steps.config.outputs.JAVA_VER }}
+
+      - name: Launch server controller (blocks until server stops)
+        run: |
+          cd server
+          python ../server_control.py 9000 19800 java ${{ steps.config.outputs.SERVER_ARGS }} -jar ${{ steps.config.outputs.SERVER_FILE }} nogui
+
+      # ---------- After server stops (manual or auto) ----------
+      - name: Delete previous 'latest' release
+        uses: liudonghua123/delete-release-action@v1
+        with:
+          release_name: 'latest'
+        continue-on-error: true
+
+      - name: Compress updated server folder
+        uses: edgarrc/action-7z@v1
+        with:
+          args: 7z a server.7z server/
+
+      - name: Upload new server.7z as 'latest' release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: server.7z
+          asset_name: server.7z
+          tag: latest
+          release_name: latest
+          overwrite: true
+          body: "Minecraft server data (world + mods + config) – auto-updated"
+
+      - name: Shutdown cloudflared tunnels
+        if: ${{ !cancelled() }}
+        uses: AnimMouse/setup-cloudflared/shutdown@v2
