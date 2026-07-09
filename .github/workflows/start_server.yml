@@ -72,29 +72,33 @@ jobs:
           sleep 15
           grep -o 'https://[^ ]*\.trycloudflare\.com' cf_*.log || true
 
+
       - name: Install playit.gg
         run: |
-          curl -SsL https://playit-cloud.github.io/playit-downloads/playit-linux-amd64 -o playit
+          # 1. Create the exact config folder playit expects
+          mkdir -p ~/.config/playit
+          
+          # 2. Automatically generate the playit.toml file using your secret
+          # This completely bypasses the interactive "Claim Link" step!
+          echo "secret_key = \"${{ secrets.PLAYIT_SECRET }}\"" > ~/.config/playit/playit.toml
+          
+          # 3. Download the official, updated linux-amd64 binary
+          curl -SsL https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-linux-amd64 -o playit
           chmod +x playit
 
       - name: Start playit.gg tunnel
         run: |
-          # 1. Wait for the Minecraft server to actually open port 25565
-          echo "Waiting for Minecraft server to bind to port 25565..."
-          timeout 60s bash -c 'until ss -tln | grep -q :25565; do sleep 2; done' || { echo "❌ Server failed to open port 25565 in time"; exit 1; }
-          echo "✅ Port 25565 is open and active!"
-
-          # 2. Run playit using ONLY the secret, forcing IPv4 local routing
-          ./playit --secret ${{ secrets.PLAYIT_SECRET }} > playit.log 2>&1 &
+          echo "Starting playit agent in the background..."
           
-          # 3. Give playit a moment to connect to the cloud gateway
+          # Run playit cleanly without extra CLI arguments (it reads playit.toml automatically)
+          ./playit > playit.log 2>&1 &
+          
+          # Give it 10 seconds to authenticate and establish the mapping
           sleep 10
           
-          # 4. CRITICAL: Print the logs to the GitHub Action console.
-          # This lets you see the exact public IP:PORT combination playit assigned!
-          echo "=== PLAYIT LOGS ==="
-          cat playit.log
-          echo "==================="
+          echo "=== PLAYIT OUTPUT LOGS ==="
+          # Check if playit is actually up or if it hit an authentication error
+          cat playit.log || true
 
       - name: Start File Browser
         run: |
