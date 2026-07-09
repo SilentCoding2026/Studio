@@ -79,9 +79,22 @@ jobs:
 
       - name: Start playit.gg tunnel
         run: |
-          ./playit --port 25565 --tcp --secret ${{ secrets.PLAYIT_SECRET }} > playit.log 2>&1 &
+          # 1. Wait for the Minecraft server to actually open port 25565
+          echo "Waiting for Minecraft server to bind to port 25565..."
+          timeout 60s bash -c 'until ss -tln | grep -q :25565; do sleep 2; done' || { echo "❌ Server failed to open port 25565 in time"; exit 1; }
+          echo "✅ Port 25565 is open and active!"
+
+          # 2. Run playit using ONLY the secret, forcing IPv4 local routing
+          ./playit --secret ${{ secrets.PLAYIT_SECRET }} > playit.log 2>&1 &
+          
+          # 3. Give playit a moment to connect to the cloud gateway
           sleep 10
-          grep -o 'tcp://[^ ]*' playit.log || true
+          
+          # 4. CRITICAL: Print the logs to the GitHub Action console.
+          # This lets you see the exact public IP:PORT combination playit assigned!
+          echo "=== PLAYIT LOGS ==="
+          cat playit.log
+          echo "==================="
 
       - name: Start File Browser
         run: |
