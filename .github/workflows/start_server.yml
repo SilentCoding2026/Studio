@@ -40,6 +40,22 @@ jobs:
         if: steps.download.outcome != 'success'
         run: mkdir -p server
 
+      - name: Download server JAR from config URL
+        run: |
+          JAR_URL=$(jq -r '.server_jar_url' config.json)
+          JAR_NAME=$(jq -r '.server_file_name' config.json)
+          if [ -z "$JAR_URL" ] || [ "$JAR_URL" = "null" ]; then
+            echo "⚠️ No server_jar_url set in config.json – skipping download."
+          else
+            echo "⬇ Downloading server JAR from $JAR_URL"
+            curl -L -o "server/$JAR_NAME" "$JAR_URL"
+            if [ $? -ne 0 ]; then
+              echo "❌ Failed to download JAR – check URL."
+              exit 1
+            fi
+            echo "✅ Server JAR downloaded to server/$JAR_NAME"
+          fi
+
       - name: Download mods from mods.json
         run: python mod_downloader.py
 
