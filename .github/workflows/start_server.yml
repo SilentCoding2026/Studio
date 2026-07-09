@@ -108,17 +108,20 @@ jobs:
           python ../server_control.py 9000 19800 java ${{ steps.config.outputs.SERVER_ARGS }} -jar ${{ steps.config.outputs.SERVER_FILE }} nogui
 
       - name: Delete previous 'latest' release
+        if: ${{ always() }}
         uses: liudonghua123/delete-release-action@v1
         with:
           release_name: 'latest'
         continue-on-error: true
 
       - name: Compress server folder
+        if: ${{ always() }}
         uses: edgarrc/action-7z@v1
         with:
           args: 7z a server.7z server/
 
       - name: Upload to release
+        if: ${{ always() }}
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
