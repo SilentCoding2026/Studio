@@ -73,21 +73,21 @@ jobs:
           grep -o 'https://[^ ]*\.trycloudflare\.com' cf_*.log || true
 
       - name: Install and start playit.gg
+        env:
+          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
         run: |
-          mkdir -p ~/.config/playit_gg
-          
-          # Write config: secret key + disable IPC socket (fixes "socket bind" error)
-          printf 'secret_key = "%s"\nno_start_io_thread = true\n' "${{ secrets.PLAYIT_SECRET }}" > ~/.config/playit_gg/playit.toml
-          
           # Download agent
           curl -SsL https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-linux-amd64 -o playit
           chmod +x playit
-          
+
+          # Create a writable socket path to satisfy IPC binding
+          mkdir -p /tmp/playit
+
           echo "Starting playit agent..."
-          ./playit > playit.log 2>&1 &
-          
+          ./playit --socket-path /tmp/playit/playit.sock > playit.log 2>&1 &
+
           sleep 12
-          
+
           echo "=== PLAYIT OUTPUT LOGS ==="
           cat playit.log || true
           echo "=========================="
