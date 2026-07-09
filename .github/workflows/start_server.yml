@@ -44,7 +44,8 @@ jobs:
         run: |
           # Ensure the server directory exists and is writable
           mkdir -p server
-          chmod 755 server
+          sudo chown -R $(whoami) server
+          sudo chmod -R 755 server
 
           JAR_URL=$(jq -r '.server_jar_url' config.json)
           JAR_NAME=$(jq -r '.server_file_name' config.json)
