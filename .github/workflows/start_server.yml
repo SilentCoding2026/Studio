@@ -79,7 +79,7 @@ jobs:
 
       - name: Start playit.gg tunnel (TCP port 25565)
         run: |
-          ./playit --port 25565 --tcp > playit.log 2>&1 &
+          ./playit --port 25565 --tcp --secret ${{ secrets.PLAYIT_SECRET }} > playit.log 2>&1 &
           sleep 10
           echo "=== playit.gg public address ==="
           grep -o 'tcp://[^ ]*' playit.log || echo "Check playit.log for address"

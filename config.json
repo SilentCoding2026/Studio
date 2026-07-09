@@ -1,0 +1,6 @@
+{
+    "server_file_name": "server.jar",
+    "server_args": "-Xmx4G -Xms4G nogui",
+    "java_version": "21",
+    "server_jar_url": "https://meta.fabricmc.net/v2/versions/loader/1.21.11/0.19.3/1.1.1/server/jar"
+}
