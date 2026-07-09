@@ -1,0 +1,192 @@
+name: Minecraft Server Just Cloudflared
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  run-server:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read config.json
+        id: config
+        run: |
+          echo "SERVER_FILE=$(jq -r '.server_file_name' config.json)" >> $GITHUB_OUTPUT
+          echo "SERVER_ARGS=$(jq -r '.server_args' config.json)" >> $GITHUB_OUTPUT
+          echo "JAVA_VER=$(jq -r '.java_version' config.json)" >> $GITHUB_OUTPUT
+
+      - name: Download latest server.7z from release
+        id: download
+        uses: robinraju/release-downloader@v1
+        with:
+          latest: true
+          fileName: 'server.7z'
+        continue-on-error: true
+
+      - name: Extract server.7z (if downloaded)
+        if: steps.download.outcome == 'success'
+        uses: edgarrc/action-7z@v1
+        with:
+          args: 7z x server.7z -aoa
+
+      - name: Create server folder if extraction was skipped
+        if: steps.download.outcome != 'success'
+        run: mkdir -p server
+
+      - name: Fix permissions
+        run: |
+          sudo chown -R $(whoami) server
+          sudo chmod -R 755 server
+
+      - name: Download server JAR from config URL
+        run: |
+          JAR_URL=$(jq -r '.server_jar_url' config.json)
+          JAR_NAME=$(jq -r '.server_file_name' config.json)
+          if [ -z "$JAR_URL" ] || [ "$JAR_URL" = "null" ]; then
+            echo "⚠️ No server_jar_url set – skipping."
+          elif [ -f "server/$JAR_NAME" ]; then
+            echo "✅ JAR already exists."
+          else
+            curl -L -f -o "server/$JAR_NAME" "$JAR_URL" || exit 1
+            echo "✅ Downloaded JAR."
+          fi
+
+      - name: Ensure server binds to all interfaces
+        run: |
+          mkdir -p server
+          if [ ! -f server/server.properties ]; then
+            printf 'server-ip=0.0.0.0\nenable-jmx-monitoring=false\nenable-rcon=true\nrcon.password=mcpanel\nrcon.port=25575\n' > server/server.properties
+          else
+            grep -q '^server-ip=' server/server.properties || echo 'server-ip=0.0.0.0' >> server/server.properties
+            sed -i 's/^server-ip=.*/server-ip=0.0.0.0/' server/server.properties
+            grep -q '^enable-rcon=' server/server.properties || echo 'enable-rcon=true' >> server/server.properties
+            sed -i 's/^enable-rcon=.*/enable-rcon=true/' server/server.properties
+            grep -q '^rcon.password=' server/server.properties || echo 'rcon.password=mcpanel' >> server/server.properties
+            grep -q '^rcon.port=' server/server.properties || echo 'rcon.port=25575' >> server/server.properties
+          fi
+
+      - name: Download mods
+        run: python mod_downloader.py
+
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: ${{ steps.config.outputs.JAVA_VER }}
+
+      - name: Setup cloudflared
+        uses: AnimMouse/setup-cloudflared@v2
+
+      - name: Start cloudflared tunnels
+        run: |
+          cloudflared tunnel --url tcp://localhost:25565 > cf_minecraft.log 2>&1 &
+          cloudflared tunnel --url http://localhost:8085 > cf_panel.log 2>&1 &
+          sleep 15
+          echo "📋 Minecraft tunnel URL:"
+          grep -o 'https://[^ ]*\.trycloudflare\.com' cf_minecraft.log || echo "Not ready yet"
+          echo "📋 Panel tunnel URL:"
+          grep -o 'https://[^ ]*\.trycloudflare\.com' cf_panel.log || echo "Not ready yet"
+
+      - name: Start panel server
+        run: |
+          nohup python server_panel.py > panel.log 2>&1 &
+          echo $! > panel.pid
+          sleep 2
+          if curl -s http://localhost:8085/health | grep -q ok; then
+            echo "✅ Panel server running on port 8085"
+          else
+            echo "⚠️ Panel health check failed — checking log:"
+            tail -20 panel.log
+          fi
+        env:
+          SHUTDOWN_HOURS: ${{ vars.SHUTDOWN_HOURS || '5.5' }}
+          RCON_PASSWORD: ${{ secrets.RCON_PASSWORD || 'mcpanel' }}
+
+      - name: Start Minecraft server and wait until ready
+        run: |
+          cd server
+          nohup java ${{ steps.config.outputs.SERVER_ARGS }} -jar ${{ steps.config.outputs.SERVER_FILE }} nogui > mc.log 2>&1 &
+          echo $! > ../mc.pid
+          cd ..
+
+          echo "⏳ Waiting for Minecraft server to accept connections on port 25565..."
+          for i in $(seq 1 90); do
+            if nc -z localhost 25565 2>/dev/null; then
+              echo "✅ Minecraft server is listening on port 25565!"
+              break
+            fi
+            if [ $i -eq 90 ]; then
+              echo "❌ Timed out after 3 minutes. Last 30 lines of server log:"
+              tail -30 server/mc.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Wait for panel to signal shutdown
+        if: ${{ always() }}
+        run: |
+          echo "⏳ Waiting for panel shutdown signal (timer or manual stop)..."
+          for i in $(seq 1 720); do
+            STATUS=$(curl -s http://localhost:8085/api/status 2>/dev/null || echo '{}')
+            COMPLETE=$(echo "$STATUS" | jq -r '.shutdown_complete // false')
+            if [ "$COMPLETE" = "true" ]; then
+              echo "✅ Panel reports shutdown complete"
+              break
+            fi
+            if [ $i -eq 720 ]; then
+              echo "⚠️ Timed out waiting for panel (6h). Proceeding anyway."
+            fi
+            sleep 30
+          done
+          sleep 15
+
+      - name: Print tunnel URLs
+        if: ${{ always() }}
+        run: |
+          echo "📋 Cloudflare Tunnel URLs (for reference):"
+          grep -o 'https://[^ ]*\.trycloudflare\.com' cf_minecraft.log 2>/dev/null || echo "No Minecraft URL found"
+          grep -o 'https://[^ ]*\.trycloudflare\.com' cf_panel.log 2>/dev/null || echo "No Panel URL found"
+
+      - name: Delete previous 'latest' release
+        if: ${{ always() }}
+        uses: liudonghua123/delete-release-action@v1
+        with:
+          release_name: 'server'
+        continue-on-error: true
+
+      - name: Compress server folder
+        if: ${{ always() }}
+        uses: edgarrc/action-7z@v1
+        with:
+          args: 7z a server.7z server/
+
+      - name: Upload to release
+        if: ${{ always() }}
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: server.7z
+          asset_name: server.7z
+          tag: latest
+          release_name: server
+          overwrite: true
+          body: "Minecraft server data – auto-updated"
+
+      - name: Shutdown tunnels
+        if: ${{ always() }}
+        uses: AnimMouse/setup-cloudflared/shutdown@v2
+
+      - name: Cleanup panel
+        if: ${{ always() }}
+        run: |
+          if [ -f panel.pid ]; then
+            kill $(cat panel.pid) 2>/dev/null || true
+          fi
