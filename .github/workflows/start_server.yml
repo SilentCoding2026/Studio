@@ -72,26 +72,20 @@ jobs:
           sleep 15
           grep -o 'https://[^ ]*\.trycloudflare\.com' cf_*.log || true
 
-      - name: Install playit.gg
+      - name: Install and start playit.gg
         run: |
-          # 1. Create the correct config folder using the underscore path playit is looking for
           mkdir -p ~/.config/playit_gg
           
-          # 2. Write your secret key into the toml file
-          echo "secret_key = \"${{ secrets.PLAYIT_SECRET }}\"" > ~/.config/playit_gg/playit.toml
+          # Write config: secret key + disable IPC socket (fixes "socket bind" error)
+          printf 'secret_key = "%s"\nno_start_io_thread = true\n' "${{ secrets.PLAYIT_SECRET }}" > ~/.config/playit_gg/playit.toml
           
-          # 3. Download the clean stable agent binary
+          # Download agent
           curl -SsL https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-linux-amd64 -o playit
           chmod +x playit
-
-      - name: Start playit.gg tunnel
-        run: |
-          echo "Starting playit agent headlessly..."
           
-          # Use --headless to bypass the IPC socket system binding error
-          ./playit --headless > playit.log 2>&1 &
+          echo "Starting playit agent..."
+          ./playit > playit.log 2>&1 &
           
-          # Give it a few moments to connect to the api servers
           sleep 12
           
           echo "=== PLAYIT OUTPUT LOGS ==="
