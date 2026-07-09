@@ -42,13 +42,20 @@ jobs:
 
       - name: Download server JAR from config URL
         run: |
+          # Ensure the server directory exists and is writable
+          mkdir -p server
+          chmod 755 server
+
           JAR_URL=$(jq -r '.server_jar_url' config.json)
           JAR_NAME=$(jq -r '.server_file_name' config.json)
+
           if [ -z "$JAR_URL" ] || [ "$JAR_URL" = "null" ]; then
-            echo "⚠️ No server_jar_url set in config.json – skipping download."
+            echo "⚠️ No server_jar_url set in config.json – skipping."
+          elif [ -f "server/$JAR_NAME" ]; then
+            echo "✅ JAR already exists, skipping download."
           else
             echo "⬇ Downloading server JAR from $JAR_URL"
-            curl -L -o "server/$JAR_NAME" "$JAR_URL"
+            curl -L -f -o "server/$JAR_NAME" "$JAR_URL"
             if [ $? -ne 0 ]; then
               echo "❌ Failed to download JAR – check URL."
               exit 1
