@@ -58,13 +58,29 @@ jobs:
             echo "✅ Downloaded JAR."
           fi
 
+      - name: Ensure server binds to all interfaces
+        run: |
+          mkdir -p server
+          if [ ! -f server/server.properties ]; then
+            printf 'server-ip=0.0.0.0\nenable-jmx-monitoring=false\n' > server/server.properties
+          else
+            grep -q '^server-ip=' server/server.properties || echo 'server-ip=0.0.0.0' >> server/server.properties
+            sed -i 's/^server-ip=.*/server-ip=0.0.0.0/' server/server.properties
+          fi
+
       - name: Download mods
         run: python mod_downloader.py
+
+      - name: Install Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: ${{ steps.config.outputs.JAVA_VER }}
 
       - name: Setup cloudflared
         uses: AnimMouse/setup-cloudflared@v2
 
-      - name: Start tunnels
+      - name: Start cloudflared tunnels
         run: |
           cloudflared tunnel --url http://localhost:8084 > cf_browser.log 2>&1 &
           cloudflared tunnel --url http://localhost:8082 > cf_fetcher.log 2>&1 &
@@ -72,25 +88,26 @@ jobs:
           sleep 15
           grep -o 'https://[^ ]*\.trycloudflare\.com' cf_*.log || true
 
-      - name: Install and start playit.gg
+      - name: Download and prepare playit.gg
         env:
           PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
         run: |
-          # Download agent
           curl -SsL https://github.com/playit-cloud/playit-agent/releases/latest/download/playit-linux-amd64 -o playit
           chmod +x playit
+          mkdir -p /tmp/playit ~/.config/playit_gg
 
-          # Create a writable socket path to satisfy IPC binding
-          mkdir -p /tmp/playit
+          printf 'secret_key = "%s"\n' "$PLAYIT_SECRET" > ~/.config/playit_gg/playit.toml
+          cat >> ~/.config/playit_gg/playit.toml << 'TOML'
+          no_start_io_thread = true
 
-          echo "Starting playit agent..."
-          ./playit --socket-path /tmp/playit/playit.sock > playit.log 2>&1 &
+          [[tunnels]]
+          name = "Minecraft Java"
+          tunnel_type = "minecraft-java"
+          local_ip = "127.0.0.1"
+          local_port = 25565
+          TOML
 
-          sleep 12
-
-          echo "=== PLAYIT OUTPUT LOGS ==="
-          cat playit.log || true
-          echo "=========================="
+          echo "✅ playit.gg binary and config ready."
 
       - name: Start File Browser
         run: |
@@ -105,16 +122,46 @@ jobs:
           cd ..
           sleep 3
 
-      - name: Install Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: 'temurin'
-          java-version: ${{ steps.config.outputs.JAVA_VER }}
-
-      - name: Start Server Controller
+      - name: Start Minecraft server and wait until ready
         run: |
           cd server
-          python ../server_control.py 9000 19800 java ${{ steps.config.outputs.SERVER_ARGS }} -jar ${{ steps.config.outputs.SERVER_FILE }} nogui
+          nohup java ${{ steps.config.outputs.SERVER_ARGS }} -jar ${{ steps.config.outputs.SERVER_FILE }} nogui > mc.log 2>&1 &
+          echo $! > ../mc.pid
+          cd ..
+
+          echo "⏳ Waiting for Minecraft server to accept connections on port 25565..."
+          for i in $(seq 1 90); do
+            if nc -z localhost 25565 2>/dev/null; then
+              echo "✅ Minecraft server is listening on port 25565!"
+              break
+            fi
+            if [ $i -eq 90 ]; then
+              echo "❌ Timed out after 3 minutes. Last 30 lines of server log:"
+              tail -30 server/mc.log
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Start playit.gg tunnel
+        run: |
+          echo "Starting playit agent (server is confirmed listening)..."
+          ./playit --socket-path /tmp/playit/playit.sock > playit.log 2>&1 &
+
+          sleep 15
+
+          echo "=== PLAYIT OUTPUT LOGS ==="
+          cat playit.log || true
+          echo "=========================="
+
+          echo "=== LAST 10 LINES OF MINECRAFT LOG ==="
+          tail -10 server/mc.log || true
+          echo "======================================="
+
+      - name: Start Server Controller (attach mode)
+        run: |
+          cd server
+          python ../server_control.py 9000 19800 --attach java ${{ steps.config.outputs.SERVER_ARGS }} -jar ${{ steps.config.outputs.SERVER_FILE }} nogui
 
       - name: Delete previous 'latest' release
         if: ${{ always() }}

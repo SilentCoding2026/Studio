@@ -7,6 +7,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 AUTO_STOP_SECS = int(sys.argv[2]) if len(sys.argv) > 2 else 14400
 MC_COMMAND = " ".join(sys.argv[3:]) if len(sys.argv) > 3 else "java -Xmx2G -jar server.jar nogui"
+# --attach flag: skip auto-start, assume server is already running
+ATTACH_MODE = '--attach' in sys.argv
+if ATTACH_MODE:
+    sys.argv.remove('--attach')
 
 mc_process = None
 shutdown_timer = None
@@ -155,18 +159,24 @@ class SimpleHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return  # suppress noisy HTTP logs
 
-if __name__ == "__main__":
-    print(f"✅ Minecraft Controller starting on port {PORT}")
-    print(f"⏱ Auto-stop in {AUTO_STOP_SECS} seconds ({(AUTO_STOP_SECS/3600):.1f} hours)")
+if __name__ == '__main__':
+    if ATTACH_MODE:
+        print(f'✅ Minecraft Controller (attach mode) starting on port {PORT}')
+        print(f'⏱ Auto-stop in {AUTO_STOP_SECS} seconds ({(AUTO_STOP_SECS/3600):.1f} hours)')
+        print('📎 Attaching to already-running server — start/stop/restart buttons are informational only.')
+        start_time = time.time()
+        shutdown_timer = threading.Timer(AUTO_STOP_SECS, auto_stop_trigger)
+        shutdown_timer.daemon = True
+        shutdown_timer.start()
+    else:
+        print(f'✅ Minecraft Controller starting on port {PORT}')
+        print(f'⏱ Auto-stop in {AUTO_STOP_SECS} seconds ({(AUTO_STOP_SECS/3600):.1f} hours)')
+        manage_server('start')
 
-    httpd = HTTPServer(("", PORT), SimpleHandler)
+    httpd = HTTPServer(('', PORT), SimpleHandler)
     httpd.allow_reuse_address = True
 
-    # Auto-start the server immediately when the script runs
-    manage_server("start")
-
-    # This runs until httpd.shutdown() is called (by the "stop" action)
     while not stop_event.is_set():
-        httpd.handle_request()  # Handle one request at a time, checking stop_event
+        httpd.handle_request()
 
-    print("[+] Controller exiting.")
+    print('[+] Controller exiting.')
